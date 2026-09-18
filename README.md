@@ -31,7 +31,7 @@ Get the features (either the Kaggle notebook's output zip, or the dataset) into 
 ```bash
 kaggle datasets download kumaarbalbir/panda-phikon-features -p data --unzip
 ./sync.sh                                    # copies the code, not the data, to the GPU box
-CUDA_VISIBLE_DEVICES=3 python train.py --features data/panda-phikon-features --out results --quiet
+CUDA_VISIBLE_DEVICES=3 python train.py --features data/pda-ft --out results --quiet
 ```
 
 Needs `torch numpy pandas pyarrow scikit-learn scipy matplotlib tqdm` in the environment, plus

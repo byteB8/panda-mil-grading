@@ -579,7 +579,7 @@ else:
 # `kaggle.json` in `~/.kaggle/`):
 #
 # ```
-# kaggle datasets download kumaarbalbir/panda-phikon-features -p data/panda-phikon-features --unzip
+# kaggle datasets download kumaarbalbir/panda-phikon-features -p data/pda-ft --unzip
 # ```
 
 # %%

@@ -11,7 +11,7 @@ Reads the features produced by notebooks/01_extract_features.ipynb and runs:
 
 Results go to --out. Finished folds are skipped when rerun, so an interrupted run continues.
 
-  CUDA_VISIBLE_DEVICES=3 python train.py --features data/panda-phikon-features --out results
+  CUDA_VISIBLE_DEVICES=3 python train.py --features data/pda-ft --out results
 """
 
 import argparse

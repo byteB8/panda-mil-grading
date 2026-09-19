@@ -32,6 +32,7 @@
 !pip install -q -U openslide-bin openslide-python kaggle
 
 # %%
+import gc
 import json
 import os
 import shutil
@@ -648,7 +649,12 @@ else:
                                              dtype=np.float16, shape=(len(tiles), FEATURE_DIM))
         stains = stain_tables(slide_stats) if STAIN_NORMALISE else None
         index = tile_slide_index(tiles, slide_stats) if STAIN_NORMALISE else None
-        written, tiles_per_sec = encode(make_loader(tiles, index), sink=features, stains=stains)
+        loader = make_loader(tiles, index)
+        written, tiles_per_sec = encode(loader, sink=features, stains=stains)
+        # Drop the loader before the next part forks tiling workers: a forked child that inherits a
+        # live iterator tries to shut down workers that are not its own and prints "Exception ignored".
+        del loader
+        gc.collect()
         features.flush()
         assert written == len(tiles), (written, len(tiles))
         assert np.isfinite(features[:: max(len(tiles) // 1000, 1)]).all(), "NaN/inf in features"

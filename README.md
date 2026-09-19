@@ -20,7 +20,11 @@ Two checks against the pixel-level masks, which the model never sees while train
 - attention separates cancer tiles from cancer-free ones at **0.88** median AUC (Radboud)
 - a linear probe on the frozen features predicts each slide's tumour area at **r = 0.94**
 
-[RESULTS.md](RESULTS.md) has the per-fold tables, the confusion matrices and the honest limits.
+Most of that collapse is fixable in feature space, and only in one direction: standardising each
+hospital's features with its own statistics lifts Karolinska → Radboud from 0.345 to **0.771**
+(3 seeds, ±0.008), while Radboud → Karolinska barely moves. See
+[RESULTS.md](RESULTS.md) for that experiment, the per-fold tables, the confusion matrices and the
+honest limits.
 
 ## What the model looks at
 
@@ -72,6 +76,16 @@ Needs `torch numpy pandas pyarrow scikit-learn scipy matplotlib tqdm`, plus `ope
 `openslide-bin` only for `--slides-dir` (heatmaps over the slide images). Finished folds are
 skipped on a rerun, so an interrupted run continues. `python train.py --help` lists the settings.
 
+**Cross-hospital experiments.** `adapt.py` runs the feature-level corrections (per-centre
+standardisation, CORAL, DANN) against the same features:
+
+```bash
+CUDA_VISIBLE_DEVICES=3 python adapt.py --features data/pda-ft --out results-adapt --quiet
+```
+
+It keeps the features on the GPU when they fit, which is what makes a full sweep take minutes:
+the model is small and the work is gathering tile rows, not matrix multiplication.
+
 **Stage 3 — heatmaps (Kaggle).** `notebooks/03_heatmaps.ipynb` draws the figure above. The
 attention values for the example slides are baked into the notebook by
 `src/make_heatmap_notebook.py`, so it needs no GPU and no upload of results — just the slide
@@ -102,7 +116,8 @@ python src/make_heatmap_notebook.py && python src/build_notebooks.py
     src/02_train_mil.py
     src/03_heatmaps_template.py           heatmap notebook without the baked-in attention
     src/make_heatmap_notebook.py          picks example slides and writes src/03_heatmaps.py
-    src/make_figures.py                   draws figures/results_summary.png from results.json
+    adapt.py                              cross-hospital adaptation experiments
+    src/make_figures.py                   draws the summary and adaptation figures
     src/build_notebooks.py                rebuilds notebooks/*.ipynb from src/*.py
     figures/, RESULTS.md                  what the run produced
     data/, results/                       not in git

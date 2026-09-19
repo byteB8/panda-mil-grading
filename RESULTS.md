@@ -43,6 +43,40 @@ disease and the same grading scale, what fails to transfer is appearance: differ
 stains and grading habits. This is the case for stain normalisation and colour augmentation, and
 it is the number to quote when someone asks what a deployed model would do at their lab.
 
+## Closing the cross-hospital gap without new images
+
+If the drop above is caused by the *features* rather than the slides, it can be fixed after the
+fact. `adapt.py` tries three standard corrections, each trained on one hospital and scored at both,
+using only unlabelled target features and never target grades. Three seeds, mean ± sd:
+
+| method | Radboud → Karolinska | Karolinska → Radboud |
+|---|---|---|
+| none (baseline) | 0.225 ± 0.018 | 0.345 ± 0.036 |
+| **per-centre standardisation** | 0.298 ± 0.087 | **0.771 ± 0.008** |
+| CORAL | 0.309 ± 0.036 | 0.453 ± 0.050 |
+| DANN (gradient reversal) | 0.200 ± 0.033 | 0.473 ± 0.092 |
+
+![cross-hospital adaptation](figures/adaptation.png)
+
+In-hospital accuracy is untouched by all three (0.85–0.91 throughout), so nothing is traded away.
+
+The result splits by direction:
+
+- **Karolinska → Radboud is largely a feature-scale problem.** Standardising each hospital's
+  features with its own mean and sd lifts kappa from 0.345 to 0.771 — a 0.43 gain against a 0.01
+  seed spread, recovering most of the 0.905 the model scores at home.
+- **Radboud → Karolinska is not.** The best fix (CORAL, 0.309) beats the baseline by 0.08, only
+  about twice the seed spread, and per-centre standardisation is within noise. Whatever separates
+  these two directions survives every affine correction of the features.
+
+So part of the gap is a shift you can undo in feature space, and part is not. That remaining part
+is the case for fixing the *images* instead, which is what the Macenko stain-normalisation run in
+`notebooks/01_extract_features.ipynb` (`STAIN_NORMALISE = True`) is for.
+
+A caveat worth stating: per-centre standardisation and CORAL both need a batch of slides from the
+new hospital before they can help, so they suit a lab deploying on its own archive, not a
+slide-by-slide service.
+
 ## What the model looks at
 
 The masks are never used in training, so comparing attention to them is a genuine check.

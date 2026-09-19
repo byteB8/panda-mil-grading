@@ -6,6 +6,8 @@
 import json
 from pathlib import Path
 
+import pandas as pd
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402  (after the backend is set)
@@ -24,10 +26,59 @@ def style(ax):
     ax.set_axisbelow(True)
 
 
-def label_bars(ax, bars, fmt="{:.3f}"):
-    for bar in bars:
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.015,
+def label_bars(ax, bars, errors=None, fmt="{:.3f}"):
+    """Values above each bar, clearing the error bar when there is one."""
+    for i, bar in enumerate(bars):
+        lift = 0.015 + (errors[i] if errors is not None else 0)
+        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + lift,
                 fmt.format(bar.get_height()), ha="center", va="bottom", fontsize=9, color=INK)
+
+
+METHOD_LABELS = {"none": "none\n(baseline)", "per-centre": "per-centre\nstandardise",
+                 "coral": "CORAL", "dann": "DANN"}
+
+
+def adaptation_figure():
+    """figures/adaptation.png — how far each feature-level fix closes the cross-hospital gap."""
+    runs = []
+    for folder in sorted(ROOT.glob("results-adapt*")):
+        table = pd.read_csv(folder / "adaptation.csv")
+        table["seed"] = json.loads((folder / "adaptation.json").read_text())["config"]["seed"]
+        runs.append(table)
+    if not runs:
+        print("no results-adapt* folders; skipping the adaptation figure")
+        return
+    runs = pd.concat(runs, ignore_index=True)
+    stats = runs.groupby(["method", "train", "test"]).qwk.agg(["mean", "std", "count"]).reset_index()
+    print(stats.round(3).to_string(index=False))
+
+    order = [m for m in METHOD_LABELS if m in set(stats.method)]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.3), facecolor=SURFACE, sharey=True)
+    for ax, source in zip(axes, ["radboud", "karolinska"]):
+        target = "karolinska" if source == "radboud" else "radboud"
+        here = stats[(stats.train == source) & (stats.test == "other centre")].set_index("method")
+        home = stats[(stats.train == source) & (stats.test == "in-centre")].set_index("method")
+        means = [here.loc[m, "mean"] for m in order]
+        errors = [here.loc[m, "std"] for m in order]
+        colours = [ORANGE if m == "none" else BLUE for m in order]
+        bars = ax.bar([METHOD_LABELS[m] for m in order], means, width=0.55, color=colours, zorder=3)
+        ax.errorbar(range(len(order)), means, yerr=errors, fmt="none", ecolor=INK, capsize=4, lw=1.1, zorder=4)
+        label_bars(ax, bars, errors=errors)
+        ax.axhline(home.loc["none", "mean"], color=MUTED, ls="--", lw=1, zorder=2)
+        ax.text(len(order) - 0.45, home.loc["none", "mean"] + 0.02, "same hospital", ha="right",
+                fontsize=8, color=MUTED)
+        ax.set_title(f"trained on {source.capitalize()}, tested on {target.capitalize()}",
+                     color=INK, fontsize=11, pad=12)
+        ax.set_ylim(0, 1.0)
+        style(ax)
+    axes[0].set_ylabel("quadratic weighted kappa", color=MUTED, fontsize=10)
+    seeds = runs.seed.nunique()
+    fig.suptitle(f"Closing the cross-hospital gap without touching the images "
+                 f"(mean of {seeds} seed{'s' if seeds > 1 else ''}, ±1 sd)", color=INK, fontsize=11)
+    fig.tight_layout()
+    out = ROOT / "figures" / "adaptation.png"
+    fig.savefig(out, dpi=160, facecolor=SURFACE)
+    print("wrote", out)
 
 
 def main():
@@ -74,6 +125,7 @@ def main():
     out = ROOT / "figures" / "results_summary.png"
     fig.savefig(out, dpi=160, facecolor=SURFACE)
     print("wrote", out)
+    adaptation_figure()
 
 
 if __name__ == "__main__":

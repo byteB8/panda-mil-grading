@@ -20,11 +20,13 @@ Two checks against the pixel-level masks, which the model never sees while train
 - attention separates cancer tiles from cancer-free ones at **0.88** median AUC (Radboud)
 - a linear probe on the frozen features predicts each slide's tumour area at **r = 0.94**
 
-Most of that collapse is fixable in feature space, and only in one direction: standardising each
-hospital's features with its own statistics lifts Karolinska → Radboud from 0.345 to **0.771**
-(3 seeds, ±0.008), while Radboud → Karolinska barely moves. See
-[RESULTS.md](RESULTS.md) for that experiment, the per-fold tables, the confusion matrices and the
-honest limits.
+Much of that collapse is a global appearance shift, and it can be undone in two quite different
+ways. Standardising each hospital's features with its own statistics lifts Karolinska → Radboud
+from 0.345 to **0.771** (3 seeds, ±0.008). Re-extracting every tile with **Macenko stain
+normalisation** lifts the same pair to 0.536 — real, but weaker, and the two do not stack, since
+both remove the same shift. The other direction, Radboud → Karolinska, resists everything tried.
+See [RESULTS.md](RESULTS.md) for both experiments, the per-fold tables, the confusion matrices and
+the honest limits.
 
 ## What the model looks at
 
@@ -77,7 +79,8 @@ Needs `torch numpy pandas pyarrow scikit-learn scipy matplotlib tqdm`, plus `ope
 skipped on a rerun, so an interrupted run continues. `python train.py --help` lists the settings.
 
 **Cross-hospital experiments.** `adapt.py` runs the feature-level corrections (per-centre
-standardisation, CORAL, DANN) against the same features:
+standardisation, CORAL, DANN) against either feature set — as scanned, or Macenko-normalised
+(`STAIN_NORMALISE = True` in notebook 1, which writes a second Kaggle dataset):
 
 ```bash
 CUDA_VISIBLE_DEVICES=3 python adapt.py --features data/pda-ft --out results-adapt --quiet

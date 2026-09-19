@@ -77,6 +77,48 @@ A caveat worth stating: per-centre standardisation and CORAL both need a batch o
 new hospital before they can help, so they suit a lab deploying on its own archive, not a
 slide-by-slide service.
 
+## Does normalising the stain help?
+
+The feature-level fixes above leave Radboud → Karolinska largely unsolved, which points at the
+images rather than the feature space. So the whole extraction was rerun with **Macenko stain
+normalisation**: each slide's own haematoxylin and eosin vectors are estimated from its thumbnail,
+and every tile is unmixed and remixed into one reference stain before Phikon sees it
+(`STAIN_NORMALISE = True` in notebook 1; 3.2 h on Kaggle, a second 8.7 GB feature set).
+
+Cross-hospital kappa, 3 seeds, mean ± sd:
+
+| method | R → K, as scanned | R → K, Macenko | K → R, as scanned | K → R, Macenko |
+|---|---|---|---|---|
+| none | 0.225 ± 0.018 | **0.284 ± 0.026** | 0.345 ± 0.036 | **0.536 ± 0.040** |
+| per-centre standardisation | 0.298 ± 0.087 | 0.265 ± 0.043 | **0.771 ± 0.008** | 0.756 ± 0.009 |
+| CORAL | 0.309 ± 0.036 | 0.248 ± 0.023 | 0.453 ± 0.050 | 0.406 ± 0.017 |
+| DANN | 0.200 ± 0.033 | 0.399 ± 0.190 | 0.473 ± 0.092 | 0.464 ± 0.193 |
+
+![stain normalisation versus feature fixes](figures/stain_comparison.png)
+
+Three things come out of this:
+
+- **Stain normalisation helps on its own.** With no other correction, Karolinska → Radboud rises
+  from 0.345 to 0.536 and Radboud → Karolinska from 0.225 to 0.284. Fixing the pixels recovers
+  part of what was lost.
+- **It does not stack with the feature fixes, and is weaker than the best of them.** Once features
+  are standardised per hospital, normalised tiles are no better than raw ones (0.756 vs 0.771;
+  0.265 vs 0.298). Both corrections are removing the same global appearance shift, so applying the
+  second buys nothing. The cheapest fix wins: per-centre standardisation costs a matrix of
+  statistics, stain normalisation costs a 3.2-hour re-extraction.
+- **It costs a little accuracy at home.** In-hospital kappa drops from 0.896 to 0.890 and mean
+  pooling from 0.842 to 0.823 (2 seeds each). Normalisation discards stain intensity that carried
+  some signal.
+
+DANN's numbers swing by ±0.19 across seeds, so its apparent wins are not trustworthy at this
+sample size; the stable methods are per-centre standardisation and CORAL.
+
+**The honest summary**: roughly two thirds of the Karolinska → Radboud gap is a global appearance
+shift, removable either in feature space or in pixel space, with the feature-space fix both
+stronger and far cheaper. Radboud → Karolinska keeps most of its gap under every correction tried,
+so something beyond stain and scale separates those two directions — most likely the grading
+conventions themselves, which no amount of colour correction can undo.
+
 ## What the model looks at
 
 The masks are never used in training, so comparing attention to them is a genuine check.

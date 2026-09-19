@@ -81,6 +81,61 @@ def adaptation_figure():
     print("wrote", out)
 
 
+def load_adapt(pattern):
+    """Every seed of an adaptation sweep, as one table."""
+    runs = []
+    for folder in sorted(ROOT.glob(pattern)):
+        table = pd.read_csv(folder / "adaptation.csv")
+        table["seed"] = json.loads((folder / "adaptation.json").read_text())["config"]["seed"]
+        runs.append(table)
+    return pd.concat(runs, ignore_index=True) if runs else None
+
+
+def stain_figure():
+    """figures/stain_comparison.png — what Macenko normalisation buys, against each feature fix."""
+    plain, mac = load_adapt("results-adapt*"), load_adapt("results-mac-adapt*")
+    if plain is None or mac is None:
+        print("need both results-adapt* and results-mac-adapt*; skipping the stain figure")
+        return
+    plain["features"], mac["features"] = "as scanned", "Macenko"
+    both = pd.concat([plain, mac], ignore_index=True)
+    stats = (both[both.test == "other centre"]
+             .groupby(["features", "method", "train"]).qwk.agg(["mean", "std"]).reset_index())
+    print(stats.round(3).to_string(index=False))
+
+    order = [m for m in METHOD_LABELS if m in set(stats.method)]
+    width, gap = 0.36, 0.012
+    fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.5), facecolor=SURFACE, sharey=True)
+    for ax, source in zip(axes, ["radboud", "karolinska"]):
+        target = "karolinska" if source == "radboud" else "radboud"
+        for offset, (name, colour) in zip((-width / 2 - gap, width / 2 + gap),
+                                          [("as scanned", ORANGE), ("Macenko", BLUE)]):
+            here = stats[(stats.features == name) & (stats.train == source)].set_index("method")
+            means = [here.loc[m, "mean"] for m in order]
+            errors = [here.loc[m, "std"] for m in order]
+            bars = ax.bar([i + offset for i in range(len(order))], means, width, label=name,
+                          color=colour, zorder=3)
+            ax.errorbar([i + offset for i in range(len(order))], means, yerr=errors, fmt="none",
+                        ecolor=INK, capsize=3, lw=1, zorder=4)
+            label_bars(ax, bars, errors=errors, fmt="{:.2f}")
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels([METHOD_LABELS[m] for m in order])
+        ax.set_ylim(0, 1.0)
+        ax.set_title(f"trained on {source.capitalize()}, tested on {target.capitalize()}",
+                     color=INK, fontsize=11, pad=12)
+        style(ax)
+    axes[0].set_ylabel("quadratic weighted kappa", color=MUTED, fontsize=10)
+    legend = axes[1].legend(frameon=False, fontsize=9, loc="upper right", title="tiles")
+    legend.get_title().set_color(MUTED)
+    for text in legend.get_texts():
+        text.set_color(MUTED)
+    fig.suptitle("Stain normalisation vs feature-level fixes (3 seeds, ±1 sd)", color=INK, fontsize=11)
+    fig.tight_layout()
+    out = ROOT / "figures" / "stain_comparison.png"
+    fig.savefig(out, dpi=160, facecolor=SURFACE)
+    print("wrote", out)
+
+
 def main():
     results = json.loads((ROOT / "results" / "results.json").read_text())
     fig, (left, right) = plt.subplots(1, 2, figsize=(11, 4.1), facecolor=SURFACE)
@@ -126,6 +181,7 @@ def main():
     fig.savefig(out, dpi=160, facecolor=SURFACE)
     print("wrote", out)
     adaptation_figure()
+    stain_figure()
 
 
 if __name__ == "__main__":

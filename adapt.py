@@ -48,6 +48,8 @@ def parse_args():
     p.add_argument("--folds", type=int, default=5)  # unused here; kept so configs compare cleanly
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--features-device", default="auto", choices=["auto", "cuda", "cpu"])
+    p.add_argument("--threads", type=int, default=8)
     return p.parse_args()
 
 
@@ -70,7 +72,7 @@ def moments(features, rows, device, chunk=CHUNK):
     total = torch.zeros(dim, dtype=torch.float64, device=device)
     gram = torch.zeros(dim, dim, dtype=torch.float64, device=device)
     for start in range(0, len(rows), chunk):
-        block = features[torch.from_numpy(rows[start:start + chunk])].to(device).float()
+        block = features[torch.as_tensor(rows[start:start + chunk], device=features.device)].to(device).float()
         total += block.sum(0).double()
         gram += (block.T @ block).double()
         del block
@@ -97,9 +99,9 @@ def standardise_per_centre(features, tiles, slides, device):
         sd = cov.diagonal().clamp_min(1e-12).sqrt().float()
         mean = mean.float()
         for start in range(0, len(rows), CHUNK):
-            index = torch.from_numpy(rows[start:start + CHUNK])
+            index = torch.as_tensor(rows[start:start + CHUNK], device=out.device)
             block = out[index].to(device).float()
-            out[index] = ((block - mean) / sd).half().cpu()
+            out[index] = ((block - mean) / sd).half().to(out.device)
             del block
     return out
 
@@ -114,9 +116,9 @@ def coral(features, tiles, slides, source, target, device):
     transform = (matrix_power(cov_s, -0.5) @ matrix_power(cov_t, 0.5)).float()
     mean_s, mean_t = mean_s.float(), mean_t.float()
     for start in range(0, len(source_rows), CHUNK):
-        index = torch.from_numpy(source_rows[start:start + CHUNK])
+        index = torch.as_tensor(source_rows[start:start + CHUNK], device=out.device)
         block = out[index].to(device).float()
-        out[index] = (((block - mean_s) @ transform) + mean_t).half().cpu()
+        out[index] = (((block - mean_s) @ transform) + mean_t).half().to(out.device)
         del block
     return out
 
@@ -221,6 +223,8 @@ def run(method, source, target, features, tiles, slides, args):
         adapted = features
 
     trainer = base.Trainer(adapted, slides, args)
+    if adapted is not features and adapted.is_cuda:
+        torch.cuda.empty_cache()
     if method in ("per-centre", "coral"):  # already on a common scale; do not undo it
         trainer.mean = torch.zeros_like(trainer.mean)
         trainer.std = torch.ones_like(trainer.std)
@@ -256,7 +260,9 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     print(f"device: {args.device}")
 
+    torch.set_num_threads(args.threads)
     features, tiles, slides, config = base.load_features(args.features)
+    features = base.place_features(features, args)
     results_path = args.out / "adaptation.csv"
     done = pd.read_csv(results_path) if results_path.exists() else pd.DataFrame()
 

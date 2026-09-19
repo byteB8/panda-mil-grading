@@ -51,7 +51,23 @@ def parse_args():
     p.add_argument("--weight-decay", type=float, default=1e-4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--features-device", default="auto", choices=["auto", "cuda", "cpu"],
+                   help="where the feature tensor lives; on the GPU the batches cost no CPU at all")
+    p.add_argument("--threads", type=int, default=8, help="torch CPU threads (this box is shared)")
     return p.parse_args()
+
+
+def place_features(features, args):
+    """Puts the features on the GPU when they fit: batch assembly is gather-bound, not compute-bound."""
+    if args.features_device == "cpu" or not torch.cuda.is_available() or args.device == "cpu":
+        return features
+    needed = features.numel() * features.element_size()
+    free, _ = torch.cuda.mem_get_info(torch.device(args.device))
+    if args.features_device == "cuda" or needed < 0.6 * free:
+        print(f"features on {args.device}: {needed / 1e9:.1f} GB of {free / 1e9:.1f} GB free")
+        return features.to(args.device)
+    print(f"features stay on the CPU: {needed / 1e9:.1f} GB would not fit in {free / 1e9:.1f} GB free")
+    return features
 
 
 def seed_everything(seed):
@@ -176,21 +192,23 @@ class Trainer:
         """Yields padded (features, mask, grades, row indices) batches from a slide table."""
         order = np.random.permutation(len(frame)) if shuffle else np.arange(len(frame))
         offsets, counts, grades = frame.offset.values, frame.n_tiles.values, frame.isup_grade.values
+        home = self.features.device
         for start in range(0, len(order), self.args.batch_size):
             rows = order[start:start + self.args.batch_size]
-            bags = []
+            picked = []
             for r in rows:
                 idx = np.arange(offsets[r], offsets[r] + counts[r])
                 if max_tiles and len(idx) > max_tiles:
                     idx = np.sort(np.random.choice(idx, max_tiles, replace=False))
-                bags.append(self.features[torch.from_numpy(idx)])
-            longest = max(len(b) for b in bags)
-            x = torch.zeros(len(bags), longest, self.dim, dtype=torch.float16)
-            mask = torch.zeros(len(bags), longest, dtype=torch.bool)
-            for i, bag in enumerate(bags):
-                x[i, :len(bag)] = bag
-                mask[i, :len(bag)] = True
-            yield (self.standardise(x.to(self.args.device, non_blocking=True)), mask.to(self.args.device),
+                picked.append(idx)
+            longest = max(len(idx) for idx in picked)
+            x = torch.zeros(len(picked), longest, self.dim, dtype=torch.float16, device=home)
+            mask = torch.zeros(len(picked), longest, dtype=torch.bool, device=home)
+            for i, idx in enumerate(picked):
+                x[i, :len(idx)] = self.features[torch.as_tensor(idx, device=home)]
+                mask[i, :len(idx)] = True
+            yield (self.standardise(x.to(self.args.device, non_blocking=True)),
+                   mask.to(self.args.device),
                    torch.as_tensor(grades[rows], device=self.args.device), rows)
 
     @torch.no_grad()
@@ -366,18 +384,19 @@ def cancer_quantification(trainer, tiles, out_dir):
     optimizer = torch.optim.AdamW(probe.parameters(), lr=1e-3, weight_decay=1e-4)
     tile_labels = torch.from_numpy((tiles.cancer_label.values == 1).astype(np.float32))
     for epoch in range(3):
-        perm = torch.from_numpy(np.random.permutation(train_idx))
+        perm = torch.as_tensor(np.random.permutation(train_idx), device=trainer.features.device)
         for start in tqdm(range(0, len(perm), 4096), desc=f"probe epoch {epoch}", disable=args.quiet):
             batch = perm[start:start + 4096]
             logits = probe(trainer.standardise(trainer.features[batch].to(args.device))).squeeze(1)
-            loss = F.binary_cross_entropy_with_logits(logits, tile_labels[batch].to(args.device))
+            loss = F.binary_cross_entropy_with_logits(logits, tile_labels[batch.cpu()].to(args.device))
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()
 
     with torch.no_grad():
         probs = torch.cat([
-            probe(trainer.standardise(trainer.features[torch.from_numpy(test_idx[s:s + 16384])].to(args.device)))
+            probe(trainer.standardise(
+                trainer.features[torch.as_tensor(test_idx[s:s + 16384], device=trainer.features.device)].to(args.device)))
             .sigmoid().squeeze(1).cpu() for s in range(0, len(test_idx), 16384)]).numpy()
     test_tiles = tiles.iloc[test_idx].assign(prob=probs)
     tile_auc = roc_auc_score(test_tiles.cancer_label == 1, test_tiles.prob)
@@ -446,9 +465,11 @@ def attention_heatmaps(abmil_oof, tiles, localisation, config, slides_dir, out_d
 def main():
     args = parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
-    print(f"device: {args.device}")
+    torch.set_num_threads(args.threads)
+    print(f"device: {args.device}, torch threads: {args.threads}")
 
     features, tiles, slides, config = load_features(args.features)
+    features = place_features(features, args)
     tiles["cancer_label"] = tile_cancer_labels(tiles)
     print("tile cancer labels:", tiles.groupby("cancer_label", dropna=False).size().to_dict())
 

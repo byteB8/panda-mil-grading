@@ -78,10 +78,11 @@ DEBUG_SLIDES = 50        # dry run on this many slides (nothing uploaded); None 
 BATCH_SIZE = 256
 NUM_WORKERS = os.cpu_count()
 MODEL_NAME = "owkin/phikon"
+STAIN_NORMALISE = False  # Macenko-normalise every tile to a reference stain before encoding
 
 KAGGLE_USERNAME = "kumaarbalbir"
-DATASET_SLUG = "panda-phikon-features"
-DATASET_TITLE = "PANDA Phikon tile features"
+DATASET_SLUG = "panda-phikon-features-macenko" if STAIN_NORMALISE else "panda-phikon-features"
+DATASET_TITLE = "PANDA Phikon tile features" + (" (Macenko)" if STAIN_NORMALISE else "")
 
 DATASET_ID = f"{KAGGLE_USERNAME.lower()}/{DATASET_SLUG}"  # replaced below by your real username
 SAVE_DIR = OUT_DIR / DATASET_SLUG  # finished parts; this folder is what gets uploaded
@@ -267,6 +268,35 @@ def box_means(binary, xs, ys, size):
     return total / area
 
 
+# Macenko's reference stain vectors and concentrations: every slide is mapped onto these, so
+# tiles from the two hospitals arrive at the encoder with the same stain appearance.
+HE_REFERENCE = np.array([[0.5626, 0.2159], [0.7201, 0.8012], [0.4062, 0.5581]], dtype=np.float32)
+MAX_CONCENTRATION_REFERENCE = np.array([1.9705, 1.0308], dtype=np.float32)
+STAIN_COLUMNS = [f"stain_{i}" for i in range(6)] + ["maxc_0", "maxc_1"]
+
+
+def macenko_stains(pixels, beta=0.15, alpha=1.0):
+    """Haematoxylin and eosin vectors for one slide, from its tissue pixels (Macenko et al., 2009).
+
+    Returns a 3x2 stain matrix and the 99th-percentile concentration of each stain, or None when
+    the slide has too little stained tissue to estimate them."""
+    optical_density = -np.log((pixels.astype(np.float32) + 1) / 256)
+    stained = optical_density[(optical_density > beta).all(axis=1)]
+    if len(stained) < 500:
+        return None
+    _, vectors = np.linalg.eigh(np.cov(stained.T))
+    plane = vectors[:, 1:3]  # the two directions carrying the stain signal
+    angles = np.arctan2(stained @ plane[:, 1], stained @ plane[:, 0])
+    first, second = np.percentile(angles, [alpha, 100 - alpha])
+    stains = np.stack([plane @ [np.cos(a), np.sin(a)] for a in (first, second)], axis=1)
+    stains *= np.sign(stains[np.abs(stains).argmax(axis=0), [0, 1]])  # point both away from zero
+    if stains[0, 0] < stains[0, 1]:  # haematoxylin is the bluer stain: less red than eosin
+        stains = stains[:, ::-1]
+    stains /= np.linalg.norm(stains, axis=0, keepdims=True)
+    concentrations = np.linalg.lstsq(stains, stained.T, rcond=None)[0]
+    return stains.astype(np.float32), np.percentile(concentrations, 99, axis=1).astype(np.float32)
+
+
 def read_level(slide, level):
     w, h = slide.level_dimensions[level]
     return np.asarray(slide.read_region((0, 0), level, (w, h)).convert("RGB"))
@@ -280,7 +310,8 @@ def tile_slide(image_id, provider):
         thumb_level = slide.level_count - 1
         ds_tile = slide.level_downsamples[TILE_LEVEL]
         ds_thumb = slide.level_downsamples[thumb_level]
-        tissue = tissue_mask(read_level(slide, thumb_level))
+        thumbnail = read_level(slide, thumb_level)
+        tissue = tissue_mask(thumbnail)
         width, height = slide.level_dimensions[TILE_LEVEL]
 
     gx, gy = np.meshgrid(np.arange(width // TILE_SIZE), np.arange(height // TILE_SIZE))
@@ -307,6 +338,13 @@ def tile_slide(image_id, provider):
         "gleason5_frac": np.float32(np.nan),
     })
 
+    stains = dict.fromkeys(STAIN_COLUMNS, np.nan)
+    if STAIN_NORMALISE:
+        estimate = macenko_stains(thumbnail[tissue])
+        if estimate is not None:
+            matrix, max_concentration = estimate
+            stains = dict(zip(STAIN_COLUMNS, [*matrix.ravel(), *max_concentration]))
+
     mask_counts = [np.nan] * 6
     if mask_path(image_id).exists():
         with openslide.OpenSlide(str(mask_path(image_id))) as mask:
@@ -331,7 +369,7 @@ def tile_slide(image_id, provider):
             tiles["epithelium_frac"] = tile_fraction(labels >= 1)
         mask_counts = np.bincount(labels.ravel(), minlength=6)[:6].tolist()
 
-    return tiles, mask_counts
+    return tiles, mask_counts, stains
 
 
 def tile_slide_safe(args):
@@ -339,7 +377,7 @@ def tile_slide_safe(args):
     try:
         return image_id, *tile_slide(image_id, provider), None
     except Exception as e:  # a corrupt slide should not kill a 10-hour run
-        return image_id, None, None, repr(e)
+        return image_id, None, None, None, repr(e)
 
 
 def tile_slides(slide_table):
@@ -347,8 +385,8 @@ def tile_slides(slide_table):
     tile_tables, slide_rows, failed = [], [], []
     jobs = list(zip(slide_table.image_id, slide_table.data_provider))
     with Pool(NUM_WORKERS) as pool:
-        for image_id, tiles, mask_counts, error in tqdm(pool.imap(tile_slide_safe, jobs, chunksize=4),
-                                                        total=len(jobs), desc="tiling"):
+        for image_id, tiles, mask_counts, stains, error in tqdm(pool.imap(tile_slide_safe, jobs, chunksize=4),
+                                                                total=len(jobs), desc="tiling"):
             if error:
                 failed.append({"image_id": image_id, "error": error})
                 continue
@@ -356,7 +394,7 @@ def tile_slides(slide_table):
                 failed.append({"image_id": image_id, "error": "no tissue tiles found"})
                 continue
             slide_rows.append({"image_id": image_id, "n_tiles": len(tiles),
-                               **{f"mask_px_{k}": c for k, c in enumerate(mask_counts)}})
+                               **{f"mask_px_{k}": c for k, c in enumerate(mask_counts)}, **stains})
             tile_tables.append(tiles)
 
     assert tile_tables, "no slide in this part produced tiles"
@@ -375,10 +413,11 @@ def tile_slides(slide_table):
 
 # %%
 class TileDataset(Dataset):
-    def __init__(self, tiles):
+    def __init__(self, tiles, slide_index=None):
         self.slide_ids = tiles.slide_id.values
         self.xs = tiles.x.values
         self.ys = tiles.y.values
+        self.slide_index = slide_index  # row of each tile's slide in the stain tables
         self.handles = {}  # per worker; tiles are in slide order, so a small cache hits almost always
 
     def __len__(self):
@@ -394,7 +433,8 @@ class TileDataset(Dataset):
             self.handles[slide_id] = openslide.OpenSlide(str(slide_path(slide_id)))
         region = self.handles[slide_id].read_region(
             (int(self.xs[i]), int(self.ys[i])), TILE_LEVEL, (TILE_SIZE, TILE_SIZE))
-        return torch.from_numpy(np.array(region.convert("RGB"))).permute(2, 0, 1)
+        tile = torch.from_numpy(np.array(region.convert("RGB"))).permute(2, 0, 1)
+        return tile if self.slide_index is None else (tile, self.slide_index[i])
 
 
 class Encoder(nn.Module):
@@ -404,8 +444,20 @@ class Encoder(nn.Module):
         self.vit = ViTModel.from_pretrained(name, add_pooling_layer=False)
         self.register_buffer("mean", torch.tensor(processor.image_mean).view(1, 3, 1, 1))
         self.register_buffer("std", torch.tensor(processor.image_std).view(1, 3, 1, 1))
+        self.register_buffer("he_reference", torch.from_numpy(HE_REFERENCE))
+        self.register_buffer("maxc_reference", torch.from_numpy(MAX_CONCENTRATION_REFERENCE))
 
-    def forward(self, images):
+    def restain(self, images, stain_pinv, max_concentration):
+        """Rewrites each tile in the reference stain: unmix with its slide's stains, remix with ours."""
+        optical_density = -torch.log((images.float() + 1) / 256).flatten(2)          # B x 3 x pixels
+        concentration = torch.bmm(stain_pinv, optical_density)                       # B x 2 x pixels
+        concentration = concentration * (self.maxc_reference / max_concentration).unsqueeze(-1)
+        remixed = torch.matmul(self.he_reference, concentration)                     # B x 3 x pixels
+        return (256 * torch.exp(-remixed) - 1).clamp(0, 255).view_as(images)
+
+    def forward(self, images, stain_pinv=None, max_concentration=None):
+        if stain_pinv is not None:
+            images = self.restain(images, stain_pinv, max_concentration)
         x = (images.float() / 255 - self.mean) / self.std
         return self.vit(pixel_values=x).last_hidden_state[:, 0]  # CLS token
 
@@ -416,20 +468,45 @@ if torch.cuda.device_count() > 1:
     encoder = nn.DataParallel(encoder)
 
 
-def make_loader(tile_table):
-    return DataLoader(TileDataset(tile_table), batch_size=BATCH_SIZE, shuffle=False,
+def stain_tables(slide_stats):
+    """Per-slide pseudo-inverse of the stain matrix and max concentrations, ready for the GPU.
+
+    Slides whose stains could not be estimated fall back to the reference, which leaves them
+    essentially unchanged."""
+    matrices = slide_stats[STAIN_COLUMNS[:6]].to_numpy(dtype=np.float32, copy=True).reshape(-1, 3, 2)
+    maxc = slide_stats[STAIN_COLUMNS[6:]].to_numpy(dtype=np.float32, copy=True)
+    matrices[~np.isfinite(matrices).all(axis=(1, 2))] = HE_REFERENCE
+    maxc[~np.isfinite(maxc).all(axis=1)] = MAX_CONCENTRATION_REFERENCE
+    return (torch.from_numpy(np.linalg.pinv(matrices)).cuda(),  # B x 2 x 3
+            torch.from_numpy(maxc).cuda())
+
+
+def make_loader(tile_table, slide_index=None):
+    return DataLoader(TileDataset(tile_table, slide_index), batch_size=BATCH_SIZE, shuffle=False,
                       num_workers=NUM_WORKERS, pin_memory=True, prefetch_factor=4)
 
 
-def encode(loader, sink=None, max_batches=None):
+def tile_slide_index(tile_table, slide_stats):
+    """Which row of `slide_stats` each tile belongs to."""
+    rows = pd.Series(np.arange(len(slide_stats)), index=slide_stats.image_id.values)
+    return torch.from_numpy(rows.reindex(tile_table.slide_id.values).to_numpy(dtype=np.int64))
+
+
+def encode(loader, sink=None, max_batches=None, stains=None):
     """Runs the encoder over a loader, writing rows into `sink` if given. Returns (tiles, tiles/s)."""
     done, start, done_at_start = 0, None, 0
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
-        for b, images in enumerate(tqdm(loader, total=max_batches or len(loader), desc="encoding")):
+        for b, batch in enumerate(tqdm(loader, total=max_batches or len(loader), desc="encoding")):
             if b == 1:
                 torch.cuda.synchronize()
                 start, done_at_start = time.time(), done  # skip the warm-up batch in the timing
-            out = encoder(images.cuda(non_blocking=True)).float().cpu().numpy()
+            if stains is None:
+                out = encoder(batch.cuda(non_blocking=True))
+            else:
+                images, index = batch
+                index = index.cuda(non_blocking=True)
+                out = encoder(images.cuda(non_blocking=True), stains[0][index], stains[1][index])
+            out = out.float().cpu().numpy()
             if sink is not None:
                 sink[done:done + len(out)] = out.astype(np.float16)
             done += len(out)
@@ -494,7 +571,30 @@ if DEBUG_SLIDES:
     plt.tight_layout()
     plt.show()
 
-    _, tiles_per_sec = encode(make_loader(tiles.head(BATCH_SIZE * 12)), max_batches=12)
+    sample = tiles.head(BATCH_SIZE * 12)
+    sample_stains = stain_tables(slide_stats) if STAIN_NORMALISE else None
+    sample_index = tile_slide_index(sample, slide_stats) if STAIN_NORMALISE else None
+    _, tiles_per_sec = encode(make_loader(sample, sample_index), max_batches=12, stains=sample_stains)
+
+    if STAIN_NORMALISE:  # eyeball the stain transform on one tile per example slide
+        picks = [tiles[tiles.slide_id == image_id].iloc[len(tiles[tiles.slide_id == image_id]) // 2]
+                 for image_id in examples.image_id]
+        raw = torch.stack([TileDataset(pd.DataFrame([t]))[0] for t in picks])
+        rows = tile_slide_index(pd.DataFrame(picks), slide_stats)
+        pinv, maxc = stain_tables(slide_stats)
+        with torch.inference_mode():
+            model = encoder.module if isinstance(encoder, nn.DataParallel) else encoder
+            fixed = model.restain(raw.cuda(), pinv[rows.cuda()], maxc[rows.cuda()]).cpu()
+        fig, axes = plt.subplots(2, len(picks), figsize=(3 * len(picks), 6.4))
+        for column, (tile, normalised, image_id) in enumerate(zip(raw, fixed, examples.image_id)):
+            axes[0, column].imshow(tile.permute(1, 2, 0).numpy())
+            axes[0, column].set_title(f"{image_id[:8]} as scanned", fontsize=8)
+            axes[1, column].imshow(normalised.permute(1, 2, 0).numpy().astype(np.uint8))
+            axes[1, column].set_title("Macenko-normalised", fontsize=8)
+        for ax in axes.ravel():
+            ax.axis("off")
+        plt.tight_layout()
+        plt.show()
     est_tiles = len(tiles) / len(slide_stats) * len(train)
     est_tiling_h = tiling_minutes / 60 / len(slide_stats) * len(train)
     est_encode_h = est_tiles / tiles_per_sec / 3600
@@ -515,7 +615,8 @@ else:
 # Finished parts from earlier runs are downloaded first and skipped.
 
 # %%
-config = {"model": MODEL_NAME, "feature_dim": FEATURE_DIM, "tile_level": TILE_LEVEL, "tile_size": TILE_SIZE,
+config = {"model": MODEL_NAME, "stain_normalise": STAIN_NORMALISE,
+          "feature_dim": FEATURE_DIM, "tile_level": TILE_LEVEL, "tile_size": TILE_SIZE,
           "min_tissue": MIN_TISSUE, "max_tiles": MAX_TILES, "part_slides": PART_SLIDES,
           "n_parts": len(parts), "n_slides": len(slides)}
 
@@ -545,7 +646,9 @@ else:
         tiles, slide_stats, failed = tile_slides(part)
         features = np.lib.format.open_memmap(TMP_DIR / f"features_{name}.npy", mode="w+",
                                              dtype=np.float16, shape=(len(tiles), FEATURE_DIM))
-        written, tiles_per_sec = encode(make_loader(tiles), sink=features)
+        stains = stain_tables(slide_stats) if STAIN_NORMALISE else None
+        index = tile_slide_index(tiles, slide_stats) if STAIN_NORMALISE else None
+        written, tiles_per_sec = encode(make_loader(tiles, index), sink=features, stains=stains)
         features.flush()
         assert written == len(tiles), (written, len(tiles))
         assert np.isfinite(features[:: max(len(tiles) // 1000, 1)]).all(), "NaN/inf in features"

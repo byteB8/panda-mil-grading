@@ -1,7 +1,22 @@
 # PANDA prostate cancer grading
 
-Slide-level ISUP grading of prostate biopsies (Kaggle PANDA, ~10,600 whole-slide images) with
+Slide-level ISUP grading of prostate biopsies (Kaggle PANDA, 10,615 whole-slide images) with
 attention-based multiple-instance learning on pathology foundation-model features.
+
+**Headline numbers** (5-fold cross-validation, stratified by hospital and grade):
+
+| | quadratic weighted kappa |
+|---|---|
+| Attention MIL (ABMIL) | **0.897 ± 0.004** |
+| Mean-pooling baseline | 0.842 ± 0.005 |
+
+The attention model beats the baseline by 0.055, more than ten times the 0.004 spread across
+folds. Trained on one hospital and tested on the other, kappa falls from 0.86–0.90 to 0.21–0.31:
+the model learns site-specific appearance, not just cancer. Attention separates cancer tiles from
+benign ones at 0.88 median AUC (Radboud) without ever seeing a mask during training, and predicted
+tumour area tracks the mask at r = 0.94.
+
+See [RESULTS.md](RESULTS.md) for the full tables and figures.
 
 Two stages, because the slides are 411 GB and the features are ~9 GB:
 
@@ -48,13 +63,27 @@ cross-hospital scores, per-slide cancer area, and figures. Reruns skip folds tha
     sync.sh                               rsync the code to the GPU box
     notebooks/01_extract_features.ipynb   stage 1, generated from src/
     notebooks/02_train_mil.ipynb          stage 2 as a Kaggle notebook (fallback if no server)
+    notebooks/03_heatmaps.ipynb           attention heatmaps, run on Kaggle where the slides are
     src/01_extract_features.py            notebook sources in `# %%` percent format
     src/02_train_mil.py
+    src/03_heatmaps_template.py           heatmap notebook without the baked-in attention
+    src/make_heatmap_notebook.py          picks example slides and writes src/03_heatmaps.py
     src/build_notebooks.py                rebuilds notebooks/*.ipynb from src/*.py
+    figures/, RESULTS.md                  what the run produced
     data/, results/                       not in git
 
 Edit `src/*.py` and run `python src/build_notebooks.py` rather than editing the notebooks.
 `train.py` holds the same training logic as notebook 2; keep changes in step.
+
+## Stage 3 — heatmaps (Kaggle)
+
+`notebooks/03_heatmaps.ipynb` draws five example slides with their attention and the mask's cancer
+tiles. The attention values are baked into the notebook by `src/make_heatmap_notebook.py`, so it
+needs no GPU and no results upload: just the competition images. Regenerate it after a new run with
+
+```bash
+python src/make_heatmap_notebook.py && python src/build_notebooks.py
+```
 
 ## Evaluation
 

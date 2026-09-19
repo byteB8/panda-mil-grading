@@ -23,6 +23,8 @@ def to_notebook(source):
 
 
 for path in sorted(HERE.glob("0*.py")):
+    if path.stem.endswith("_template"):  # source for a generated notebook, not a notebook itself
+        continue
     out = HERE.parent / "notebooks" / path.with_suffix(".ipynb").name
     out.parent.mkdir(exist_ok=True)
     out.write_text(json.dumps(to_notebook(path.read_text()), indent=1) + "\n")

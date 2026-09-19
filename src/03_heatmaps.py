@@ -199,7 +199,7 @@ print("slides:", SLIDE_DIR)
 
 # %%
 def slide_maps(slide):
-    """Thumbnail plus the attention and mask-cancer overlays, all in thumbnail pixels."""
+    """Thumbnail plus the attention and mask-cancer overlays, cropped to the tissue."""
     with openslide.OpenSlide(str(SLIDE_DIR / f"{slide['image_id']}.tiff")) as handle:
         level = handle.level_count - 1
         width, height = handle.level_dimensions[level]
@@ -216,12 +216,25 @@ def slide_maps(slide):
         attention_map[py:py + side, px:px + side] = rank
         if label >= 0:  # -1 means the mask does not cover this tile
             cancer_map[py:py + side, px:px + side] = label
-    return thumb, attention_map, cancer_map
+
+    # Crop to the tiles, with a small margin: biopsies are thin, so most of a slide is empty glass.
+    margin = side
+    x0 = max(int(min(slide["x"]) / downsample) - margin, 0)
+    y0 = max(int(min(slide["y"]) / downsample) - margin, 0)
+    x1 = min(int(max(slide["x"]) / downsample) + side + margin, width)
+    y1 = min(int(max(slide["y"]) / downsample) + side + margin, height)
+    box = (slice(y0, y1), slice(x0, x1))
+    return thumb[box], attention_map[box], cancer_map[box]
 
 
-fig, axes = plt.subplots(len(slides), 3, figsize=(13, 4.2 * len(slides)))
-for row, slide in zip(np.atleast_2d(axes), slides):
-    thumb, attention_map, cancer_map = slide_maps(slide)
+drawn = [slide_maps(slide) for slide in slides]
+
+# Give each row the height its cropped slide needs, so thin biopsies do not leave a band of white.
+panel_width = 4.2
+heights = [panel_width * thumb.shape[0] / thumb.shape[1] for thumb, _, _ in drawn]
+fig, axes = plt.subplots(len(slides), 3, figsize=(3 * panel_width, sum(heights) + 0.9 * len(slides)),
+                         gridspec_kw={"height_ratios": heights})
+for row, slide, (thumb, attention_map, cancer_map) in zip(np.atleast_2d(axes), slides, drawn):
     auc = "no mask" if slide["auc"] is None else f"localisation AUC {slide['auc']:.2f}"
 
     row[0].imshow(thumb)

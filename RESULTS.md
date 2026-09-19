@@ -14,6 +14,8 @@ scored on stays untouched.
 | **ABMIL** (gated attention) | **0.897 ± 0.004** | 0.917 | 0.857 |
 | Mean pooling | 0.842 ± 0.005 | 0.814 | 0.819 |
 
+![grading accuracy and cross-hospital transfer](figures/results_summary.png)
+
 Per fold, ABMIL scores 0.891–0.901 and mean pooling 0.837–0.850, so the 0.055 gap never comes
 close to overlapping. Attention is doing real work: a biopsy is mostly benign tissue, and
 averaging over every tile dilutes the few that carry the grade.
@@ -53,9 +55,13 @@ The masks are never used in training, so comparing attention to them is a genuin
 
 ![cancer area](figures/cancer_area.png)
 
-`notebooks/03_heatmaps.ipynb` draws five slides: two where attention lands squarely on the mask's
-cancer, a typical one, a failure where attention avoids it (ISUP 3 predicted as 1, localisation
-AUC 0.03), and a benign slide for contrast.
+![attention heatmaps](figures/attention_heatmaps.png)
+
+Five slides from `notebooks/03_heatmaps.ipynb`: two where attention lands squarely on the mask's
+cancer (one per hospital), a typical slide at the median localisation AUC, a failure where
+attention avoids the cancer (ISUP 3 predicted as 1, AUC 0.03), and a benign slide for contrast.
+Attention is rank-scaled per slide, since the raw weights sum to one and shrink as a slide has
+more tiles.
 
 ## Honest limits
 

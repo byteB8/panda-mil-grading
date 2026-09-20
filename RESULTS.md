@@ -1,7 +1,8 @@
 # Results
 
-One run of `train.py` on 10,615 slides and 5,686,231 tiles: 20 epochs, 5 folds, seed 0, about
-50 minutes on one A100. Raw numbers in `results/results.json` (not in git).
+`train.py` on 10,615 slides and 5,686,231 tiles: 20 epochs, 5 folds, three seeds, about an hour
+per run on one A100. Tables below quote the seed-0 run unless they say otherwise; the three-seed
+means are in "How much of this is seed luck?". Raw numbers in `results*/results.json` (not in git).
 
 ## Grading
 
@@ -28,6 +29,21 @@ larger and more class-balanced half of the dataset.
 Mistakes sit next to the diagonal: the model confuses neighbouring grades, which is what the
 quadratic weighting forgives and what pathologists disagree about too.
 
+### How much of this is seed luck?
+
+Three seeds of the whole pipeline, each a fresh 5-fold cross-validation (mean ± sd):
+
+| | as scanned | Macenko-normalised |
+|---|---|---|
+| ABMIL | **0.8951 ± 0.0018** | 0.8899 ± 0.0010 |
+| Mean pooling | 0.8428 ± 0.0008 | 0.8228 ± 0.0008 |
+| tile-level cancer AUC | 0.9382 ± 0.0027 | 0.9317 ± 0.0038 |
+| slide cancer-area r | 0.9385 ± 0.0044 | 0.9321 ± 0.0055 |
+
+The seed spread is 0.002, so the 0.05 gap between attention and mean pooling is roughly 30 times
+the noise, and the 0.005 that stain normalisation costs in-distribution is about 3 times it —
+small, but real rather than luck.
+
 ## Cross-hospital robustness
 
 Train on one hospital, hold out 20% of it as an in-hospital test set, then test on the other
@@ -35,8 +51,10 @@ hospital as well.
 
 | Trained on | Same hospital | Other hospital |
 |---|---|---|
-| Radboud | 0.860 | **0.205** |
-| Karolinska | 0.899 | **0.305** |
+| Radboud | 0.872 ± 0.011 | **0.225 ± 0.018** |
+| Karolinska | 0.905 ± 0.007 | **0.345 ± 0.036** |
+
+(three seeds, mean ± sd)
 
 Roughly three quarters of the performance disappears at a new site. Since both halves are the same
 disease and the same grading scale, what fails to transfer is appearance: different scanners,
@@ -106,9 +124,10 @@ Three things come out of this:
   0.265 vs 0.298). Both corrections are removing the same global appearance shift, so applying the
   second buys nothing. The cheapest fix wins: per-centre standardisation costs a matrix of
   statistics, stain normalisation costs a 3.2-hour re-extraction.
-- **It costs a little accuracy at home.** In-hospital kappa drops from 0.896 to 0.890 and mean
-  pooling from 0.842 to 0.823 (2 seeds each). Normalisation discards stain intensity that carried
-  some signal.
+- **It costs a little accuracy at home.** Over three seeds, cross-validated kappa drops from
+  0.8951 ± 0.0018 to 0.8899 ± 0.0010, mean pooling from 0.8428 to 0.8228, and both mask-based
+  checks fall slightly (tile AUC 0.938 → 0.932, area r 0.939 → 0.932). Normalisation discards
+  stain intensity that carried some signal.
 
 DANN's numbers swing by ±0.19 across seeds, so its apparent wins are not trustworthy at this
 sample size; the stable methods are per-centre standardisation and CORAL.

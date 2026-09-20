@@ -8,12 +8,12 @@ the model actually looks at, and how little of it survives a change of hospital.
 
 | | quadratic weighted kappa |
 |---|---|
-| **Attention MIL (ABMIL)** | **0.897 ± 0.004** |
-| Mean-pooling baseline | 0.842 ± 0.005 |
+| **Attention MIL (ABMIL)** | **0.895 ± 0.002** |
+| Mean-pooling baseline | 0.843 ± 0.001 |
 
-Attention beats the baseline by 0.055, more than ten times the 0.004 spread across folds. Trained
-on one hospital and tested on the other, kappa collapses from 0.86–0.90 to 0.21–0.31: the model
-has learned a good deal of site-specific appearance along with the cancer.
+Three seeds, each a fresh 5-fold cross-validation. Attention beats the baseline by 0.052, about
+thirty times the seed spread. Trained on one hospital and tested on the other, kappa collapses to
+0.23–0.35: the model has learned a good deal of site-specific appearance along with the cancer.
 
 Two checks against the pixel-level masks, which the model never sees while training:
 
